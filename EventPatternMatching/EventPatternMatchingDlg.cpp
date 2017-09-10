@@ -57,7 +57,7 @@ bool IEventCounter::checkAndParseFile(CString & multiLine, int& noOfFaults) {
 
 	bool stageThreeStarted = false;       //This is flagged true when we detect stage3 for first time or after a fault.
 
-/*  I am calling the event stage 3 to stage 2 transition happens after being on stage 3 for more than 5 minutes
+/*  I am calling the event - stage 3 to stage 2 transition happening after being on stage 3 for more than 5 minutes - 
 	as "faultStageBegins" has happened.
     This is flagged true, when the aforementioned series of events happens 
 */
