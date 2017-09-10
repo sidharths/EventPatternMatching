@@ -11,38 +11,83 @@
 #define new DEBUG_NEW
 #endif
 
-//My class to handle the file and check for event
+/*
+FUNCTION
+bool IEventCounter::checkAndParseFile (CString & multiLine, int& noOfFaults)
+
+ON SUCCESS:
+The function returns 'true' on SUCCESS.
+the arguments 'multiLine' and 'noOfFaults' then contain the text descriptions of lines where fault was detected and the total number of faults.
+
+ON FAILURE:
+The function resturns 'false'
+Which means the file is in bad and not the expected format. More messages can be added on later to what kind of format error occured.
+
+*/
+
+// a private mutex variable to synchrnozie threads accessing static variables
+CMutex                            IEventCounter::mWriteMutex;
+
+
+//   private dictionary variables to store maxevent count and the Display text for each devid. 
+//   We will use mutex to exclusively accesss the dictionary when lot of threads are calling the functions.
+CMap <CString, LPCSTR,     int,    int>	 IEventCounter::mMapDevIdCount;
+CMap <CString, LPCSTR, CString, LPCSTR>  IEventCounter::mMapDevIdDisplayText;
+ 
 
 bool IEventCounter::checkAndParseFile(CString & multiLine, int& noOfFaults) {
 
-	CStdioFile  myFile;
+	CStdioFile  myFile;  //to open and read the input file
 	CFileException fileException; 
 	noOfFaults = 0;
 
 	if (!myFile.Open(mPath, CFile::modeRead, &fileException)) {
 		
-		MessageBox(NULL,
-			(LPCWSTR)L"File Not Found",
-			(LPCWSTR)L" ", NULL);
+		//Message box dialog pops if the file cannot be opened.
+		MessageBox(NULL, 
+			_T("Inout File Not Found"),
+			_T("Error "), NULL);
 		return false;	
 	}
 
-	CString strRow;
-	int i = 0;
-	bool stageThreeStarted = false;
-	bool faultStageStarted = false;
-	CTime stageThreeStartTime;
-	CTimeSpan fiveMinuteGap(0, 0, 5, 0);
+	CString strRow; // Read the text file line by line
+	
+	int lineNo = 1;  //Line Number of the parsed file
 
-	while ( myFile.ReadString(strRow) )
+
+	bool stageThreeStarted = false;       //This is flagged true when we detect stage3 for first time or after a fault.
+
+/*  I am calling the event stage 3 to stage 2 transition happens after being on stage 3 for more than 5 minutes
+	as "faultStageBegins" has happened.
+    This is flagged true, when the aforementioned series of events happens 
+*/
+	bool faultStageBegins = false;
+	CTime stageThreeStartTime;            // a timer to keep track of start of the 5 minute gap we are looking for
+	CTimeSpan fiveMinuteGap(0, 0, 5, 0);  // Hard coding the time gap in a CTimeSpan constant
+
+	while ( myFile.ReadString(strRow) )  // read line by line
 	{ 
-		int nTokenPos = 0;
+		int nTokenPos = 0;    // offset while we tokenize a string line
 
-		CTime currentTime;
-		int stageCurrent=-1;
+		CTime currentTime;    // In the CTime structure we will store the current lines time. CTime will help us in comparing time between two lines.
+		int stageCurrent=-1;  // Here we will store the stage number of current line of file
 
-		if (!i) {
-			//The first line should be "timestamp" and "value"only
+		/*
+		Here I am assuming that file is in correct format. That is we expect
+		yyyy:mm:dd <whitespace> hh:mm:ss <whitespace> stagenumber
+		So each line we have 3 token strings separated by tab. I am coding for more general separated by white space which could be tab, space, carriage feed etc
+		1. The first token string tell the year day month and is seprated by hyphen (-)
+		2. The second token string tells the hour, minute and second and is seperated by (:)
+		3. The last token string is an integer limited to 0,1,2,3.
+
+		The first line of the file has a header which should be "timestamp" <whitespace> "value"
+
+		*/
+
+		if (lineNo==1) { // check the header of file
+
+			//The first line should be "timestamp" and "value" only
+
 			CString tokenized = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
 			if (tokenized.MakeLower() != L"timestamp")
 				return false;
@@ -55,52 +100,70 @@ bool IEventCounter::checkAndParseFile(CString & multiLine, int& noOfFaults) {
 			if (!tokenized.IsEmpty())
 				return false;			
 			
-			++i;
+			++lineNo;
 			continue;
 		}
 		else {
-			CString yearMonthDay = strRow.Tokenize(_T(" \r\n\t"), nTokenPos); 
-			CString hourMinSec = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
-			CString stage = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
+			CString yearMonthDay  = strRow.Tokenize(_T(" \r\n\t"), nTokenPos); 
+			CString hourMinSec    = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
+			CString stage         = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
 
-			CString tokenized = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
-			if (!tokenized.IsEmpty())
+			CString tokenized     = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
+			if (!tokenized.IsEmpty()) //not expecting any string after the first 3 tokens in the line
 				return false;
 
-			if ( !this->convertToCTime(yearMonthDay, hourMinSec, currentTime))
+			// currentTime will hold the parsed current time of line
+			if ( !this->convertToCTime(yearMonthDay, hourMinSec, currentTime)) //Converting to CTime structure
 				return false;
 
+			//stageCurrent will hold the current stage number
 			stageCurrent = _ttoi(stage);
 		}
 		 
-		if (!stageThreeStarted && stageCurrent == 3) {
+		/* Here the logic of detecting fault is implemented. 
+		Basically we are trying to isolate the state space.
+		This is done as and when we parse the file, line by line.
+		*/
+
+		// if stage 3 or "faultstagebegins" hasnt been seen yet and the current stage is stage 3 then set the flag and save start time.
+		if (!stageThreeStarted && !faultStageBegins 
+			&& stageCurrent == 3) {
 			stageThreeStarted   = true;
-			stageThreeStartTime = currentTime;
+			stageThreeStartTime = currentTime; 
 		}
 
-		if (stageThreeStarted && (stageCurrent == 0 || stageCurrent == 1) )
-			stageThreeStarted   = false;
+		// While on stage 3 but not on faultStageBegins, if we get stage 0 or 1 at anytime then reset the stage 3 start flag. because these case dont lead to fault.
+	    else if (stageThreeStarted && !faultStageBegins 
+			 && (stageCurrent == 0 || stageCurrent == 1)) {
+			stageThreeStarted = false; 
+		}
 
-		if (stageThreeStarted &&  stageCurrent == 2 &&
-			((currentTime - stageThreeStartTime) < fiveMinuteGap) )
-			stageThreeStarted   = false;
+		// While on stage 3 but not on faultStageBegins, if we get stage 2  BUT if it hasnt been 5 minutes in stage 3 then this case also wont lead to fault. Hence reset the flag.
+		else if (stageThreeStarted && !faultStageBegins  
+			&&  stageCurrent == 2 
+			&& ((currentTime - stageThreeStartTime) < fiveMinuteGap)) {
+			stageThreeStarted = false; 
+		}
 
-		if ( !faultStageStarted &&
-			stageThreeStarted &&  stageCurrent == 2 &&  
+		// While on stage 3 but not on faultStageBegins,  we reach stage 2 BUT after spending 5 minutes in stage 3. Then we can say we are closer to fault stage. Hence we set the faultStageBegins flag.
+		else if (stageThreeStarted && !faultStageBegins  
+			 &&  stageCurrent == 2 &&
 			( (currentTime-stageThreeStartTime) >= fiveMinuteGap) ) {
-			faultStageStarted = true;
+			faultStageBegins = true; 
 		}
 
-		if (faultStageStarted && stageCurrent == 1 ) {
+		// Once fault stage has started then if stage is recorded that means reset all flags and start again.
+		else if (faultStageBegins && stageCurrent == 1 ) {
 			stageThreeStarted = false;
-			faultStageStarted = false;
+			faultStageBegins  = false; 
 		}
 
+		// if we reach however to stage 0. That means this is the fault we are looking for. 
+		else if (faultStageBegins && stageCurrent == 0) {
+			++noOfFaults; // increase the count of total faults
 
-		if (faultStageStarted && stageCurrent == 0) {
-			++noOfFaults;
+			//store the information of the location of the fault in CString so that it can be displayed in GUI
 			CString formatStr;
-
 			formatStr.Format(_T("Fault on Stage 0 at Timestamp %d-%02d-%02d %02d:%02d:%02d ( Line Number %d ) \r\n"),
 								currentTime.GetYear(),
 								currentTime.GetMonth(),
@@ -108,32 +171,43 @@ bool IEventCounter::checkAndParseFile(CString & multiLine, int& noOfFaults) {
 								currentTime.GetHour(),
 								currentTime.GetMinute(),
 								currentTime.GetSecond(),
-								i+1
+								lineNo
 							 );
-
 			multiLine += formatStr;
 
+			//reset all flags after the fault has been detected and processed
 			stageThreeStarted = false;
-			faultStageStarted = false;
+			faultStageBegins  = false;
 
 		}
 		//	MessageBox(NULL,(LPCWSTR)  strRow,(LPCWSTR)L" ",NULL);
 		
-		++i;
+		++lineNo;
 	}
 
-	myFile.Close();
-	mLines = i - 1;
+	myFile.Close(); //close the file
+	mLines = lineNo; //store total line numbers in file just for debugging purposes.
 
 	//MessageBox(NULL,(LPCWSTR)L"File Loaded Successfully",(LPCWSTR)L" ",	NULL);
 	
 	return true;
 }
 
+/*
+FUNCTION
+bool IEventCounter::convertToCTime (CString   yearMonthDay, CString   hourMinSec, CTime& mTime)
+
+ON SUCCESS:
+The function returns 'true' on SUCCESS.
+the argument 'mTime' would coontain the CTime structure of the input timestamp (yearMonthDay & hourMinSec)
+
+ON FAILURE:
+The function resturns 'false' 
+Currently I am not returning false but that feature can be added if the format of file has to be rigorously checked.
+*/
 
 
-
-bool IEventCounter::convertToCTime(CString   yearMonthDay, CString   hourMinSec, CTime& t) {
+bool IEventCounter::convertToCTime(CString   yearMonthDay, CString   hourMinSec, CTime& mTime) {
 
 	int nTokenPos  = 0;
 	CString year   = yearMonthDay.Tokenize(_T("-"), nTokenPos);
@@ -152,39 +226,205 @@ bool IEventCounter::convertToCTime(CString   yearMonthDay, CString   hourMinSec,
 	int mi   = _ttoi(minute);
 	int ss   = _ttoi(second);	 
 
-	t = CTime(yyyy, mm, dd, hh, mi, ss);
+	mTime = CTime(yyyy, mm, dd, hh, mi, ss);
 
 	return true;
 
 }
 
+/*
+FUNCTION
+
+void IEventCounter::ParseEvents(CString deviceID, const char* logName)
+
+ON SUCCESS:
+The  file provided by the path (logName) would be correctly parsed and the fault events would have been detected.
+
+ON FAILURE:
+Message boxes would pop up to the user saying "file could not be opened" or "bad format"
+
+This function also updates the internal dictionary and keeps track of the total number of faults for the deviceID.
+
+*/
 
 
 void IEventCounter::ParseEvents(CString deviceID, const char* logName) {
 		
 	int temp;
-	if (!mMapDevIdCount.Lookup(deviceID, temp)) {
+
+/*	
+	//retreive from file cache
+	int totalFaults = this->retreiveFaultsFromCache(deviceID);
+	
+	if (totalFaults != -1) {
+		mMapDevIdCount[deviceID] = totalFaults;
+		return;
+	}
+*/
+
+	mWriteMutex.Lock();
+	bool status = mMapDevIdCount.Lookup(deviceID, temp);
+	mWriteMutex.Unlock();
+
+	if (!status) {  // if deviceID is not in the CMap dictionary'=
+
 		CString path(logName);
 		mPath = path;
 		CString multiLine = _T("");
 		int noOfFaults = 0;
 
+		// call checkAndParsefile to process the file
 		this->checkAndParseFile(multiLine, noOfFaults);
-		mMapDevIdCount[deviceID] = noOfFaults;
+
+		//store debug info on details of events in a public variable
+		mDisplayLines = multiLine;
+
+		//update the dictionary and store the total number of faults as the value to the deviceID key.
+
+		mWriteMutex.Lock();
+		mMapDevIdCount[deviceID]       = noOfFaults;
+		mMapDevIdDisplayText[deviceID] = mDisplayLines;
+		mWriteMutex.Unlock();
+
+		//update file cache
+		//this->UpdateCache(deviceID, noOfFaults);
 	}
 
 }
+
+
+/*
+FUNCTION
+
+int  IEventCounter::GetEventCount(CString deviceID)
+
+ON SUCCESS:
+Retreives from the internal dictionary CMap, the total number of fault events based on the deviceID.
+
+ON FAILURE:
+returns -1
+
+*/
 
 int  IEventCounter::GetEventCount(CString deviceID) {
 	
 	int temp;
 
+	mWriteMutex.Lock();
+
 	if (!mMapDevIdCount.Lookup(deviceID, temp))
 		return -1;
 	else
 		return temp;
+
+	mWriteMutex.Unlock();
 	 
 }
+
+
+
+CString  IEventCounter::GetEventLines(CString deviceID) {
+
+	CString temp;
+
+	mWriteMutex.Lock();
+
+	if (!mMapDevIdDisplayText.Lookup(deviceID, temp))
+		return _T("");
+	else
+		return temp;
+
+	mWriteMutex.Unlock();
+
+}
+
+
+// This function is the event handler we select and open the file from the GUI.
+
+void CEventPatternMatchingDlg::OnBnClickedButton1()
+{
+	// TODO: Add your control notification handler code here
+
+	CFileDialog file1(true);
+
+	if (file1.DoModal() == IDOK)
+	{
+		CString PathToFile = file1.GetPathName();
+
+		mIEventCounter = new IEventCounter(PathToFile);
+
+		CString faultLines = _T("");
+		int     totalFaults;
+
+		//Testing  
+#if TESTING
+		char* myString;
+		myString= CT2A(PathToFile);
+		mIEventCounter->ParseEvents(_T("myDeviceId"), myString);
+		totalFaults = mIEventCounter->GetEventCount(_T("myDeviceId"));
+		faultLines  = mIEventCounter->GetEventLines(_T("myDeviceId"));
+#else
+		if (!mIEventCounter->checkAndParseFile(faultLines, totalFaults)) {
+			MessageBox((LPCSTR)L"File not in correct format, please check again!");
+		}
+#endif
+
+		mListOfFaults  = faultLines;
+		mTotalNoFaults = totalFaults;
+		UpdateData(false);
+
+	}
+
+}
+
+
+
+
+/*
+Function for cache file based implementation. This could be useful in multi process environment, but file access will be slower to hash map implementation.
+
+*/
+
+
+int IEventCounter::retreiveFaultsFromCache(CString deviceId) {
+
+	CString strRow;
+	int nTokenPos = 0;
+
+
+	mWriteMutex.Lock();
+
+	myCacheFile.Seek(0, CFile::begin);
+	while (myCacheFile.ReadString(strRow))  // read line by line
+	{
+		CString devId = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
+		CString totalCount = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
+
+		if (devId == deviceId)
+			return _ttoi(totalCount);
+	}
+
+	mWriteMutex.Unlock();
+
+	return -1;
+}
+
+void  IEventCounter::UpdateCache(CString deviceId, int noOfFaults) {
+	CString strRow;
+	strRow.Format(_T("%s\t%d"), deviceId, noOfFaults);
+
+	mWriteMutex.Lock();
+
+	myCacheFile.Seek(0, CFile::end);
+	myCacheFile.WriteString(strRow);
+
+	mWriteMutex.Unlock();
+}
+
+/* rest of the code is the template that came with MFC
+
+*/
+
 
 
 // CAboutDlg dialog used for App About
@@ -334,43 +574,6 @@ HCURSOR CEventPatternMatchingDlg::OnQueryDragIcon()
 	return static_cast<HCURSOR>(m_hIcon);
 }
 
-
-
-void CEventPatternMatchingDlg::OnBnClickedButton1()
-{
-	// TODO: Add your control notification handler code here
-
-	CFileDialog file1(true);
-
-	if (file1.DoModal() == IDOK)
-	{  
-		CString PathToFile = file1.GetPathName();
-
-		mIEventCounter = new IEventCounter(PathToFile);
-
-		CString faultLines = _T("");
-		int     totalFaults;
-
-		//Testing  
-#if TESTING
-		char *myString; 
-		myString = CA2W(PathToFile);
-		mIEventCounter->ParseEvents(_T("myDeviceId"), myString);
-		totalFaults = mIEventCounter->GetEventCount(_T("myDeviceId") );
-
-#else
-		if (!mIEventCounter->checkAndParseFile(faultLines, totalFaults)) {
-				MessageBox( (LPCWSTR)L"File not in correct format, please check again!" );
-		}
-#endif
-		 
-		mListOfFaults = faultLines; 
-		mTotalNoFaults = totalFaults;
-		UpdateData(false); 
-
-	}
-
-}
 
 
 void CEventPatternMatchingDlg::OnEnChangeEdit1()
