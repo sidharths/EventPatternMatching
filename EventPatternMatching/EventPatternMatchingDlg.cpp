@@ -275,15 +275,13 @@ void IEventCounter::ParseEvents(CString deviceID, const char* logName) {
 
 		// call checkAndParsefile to process the file
 		this->checkAndParseFile(multiLine, noOfFaults);
-
-		//store debug info on details of events in a public variable
-		mDisplayLines = multiLine;
+		 
 
 		//update the dictionary and store the total number of faults as the value to the deviceID key.
 
 		mWriteMutex.Lock();
 		mMapDevIdCount[deviceID]       = noOfFaults;
-		mMapDevIdDisplayText[deviceID] = mDisplayLines;
+		mMapDevIdDisplayText[deviceID] = multiLine;
 		mWriteMutex.Unlock();
 
 		//update file cache
@@ -313,13 +311,25 @@ int  IEventCounter::GetEventCount(CString deviceID) {
 	mWriteMutex.Lock();
 
 	if (!mMapDevIdCount.Lookup(deviceID, temp))
-		return -1;
+		return -1; //return -1 for count if deviceId not found in hashmap
 	else
 		return temp;
 
 	mWriteMutex.Unlock();
 	 
 }
+/*
+FUNCTION
+
+int  IEventCounter::GetEventLines(CString deviceID)
+
+ON SUCCESS:
+Retreives from the internal dictionary CMap, the CString for the event description based on the deviceID.
+
+ON FAILURE:
+returns -1
+
+*/
 
 
 
@@ -330,7 +340,7 @@ CString  IEventCounter::GetEventLines(CString deviceID) {
 	mWriteMutex.Lock();
 
 	if (!mMapDevIdDisplayText.Lookup(deviceID, temp))
-		return _T("");
+		return _T(""); //return empty string if deviceId not found in hashmap
 	else
 		return temp;
 
@@ -363,9 +373,9 @@ void CEventPatternMatchingDlg::OnBnClickedButton1()
 		mIEventCounter->ParseEvents(_T("myDeviceId"), myString);
 		totalFaults = mIEventCounter->GetEventCount(_T("myDeviceId"));
 		faultLines  = mIEventCounter->GetEventLines(_T("myDeviceId"));
-#else
+#else		 
 		if (!mIEventCounter->checkAndParseFile(faultLines, totalFaults)) {
-			MessageBox((LPCSTR)L"File not in correct format, please check again!");
+			MessageBox("File not in correct format, please check again!");
 		}
 #endif
 
@@ -382,7 +392,7 @@ void CEventPatternMatchingDlg::OnBnClickedButton1()
 
 /*
 Function for cache file based implementation. This could be useful in multi process environment, but file access will be slower to hash map implementation.
-
+  I have commented the calls to these functions and instead used the HashMaps.
 */
 
 
@@ -397,7 +407,7 @@ int IEventCounter::retreiveFaultsFromCache(CString deviceId) {
 	myCacheFile.Seek(0, CFile::begin);
 	while (myCacheFile.ReadString(strRow))  // read line by line
 	{
-		CString devId = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
+		CString devId      = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
 		CString totalCount = strRow.Tokenize(_T(" \r\n\t"), nTokenPos);
 
 		if (devId == deviceId)
